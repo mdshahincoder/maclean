@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+#
+# maclean — reclaim disk space on macOS, for everyone.
+#
+#   An interactive, safe-by-default disk analyzer & cleaner.
+#   Whether you're a developer, video editor, designer, musician,
+#   photographer, or just someone whose Mac is full — maclean finds
+#   what's eating your storage and helps you clean it up safely.
+#
+# Usage:
+#   maclean                  guided scan (asks who you are, scans smartly)
+#   maclean scan             same as above
+#   maclean setup            choose / change your profile
+#   maclean overview         disk status + biggest home folders
+#   maclean big              biggest individual files
+#   maclean dev              dev build artifacts (node_modules, .next, ...)
+#   maclean nodes            project node_modules (safe to delete)
+#   maclean caches           known cache locations
+#   maclean clean <target>   targeted clean: nodes | caches | dev | trash | brew
+#
+# Flags (global):
+#   -n, --dry-run   preview only — never delete anything
+#   -y, --yes       skip confirmation prompts
+#   --no-color      disable color output
+#   -h, --help      show help
+#   -v, --version   show version
+#
+# Safe by design:
+#   * Personal data (projects, photos, libraries) is only ever REPORTED,
+#     never deleted automatically.
+#   * Only regenerable caches & build output are offered for auto-cleaning.
+#   * Every destructive action shows a summary and asks for confirmation.
+#
+# Author: Shahin Alam   *   License: MIT
+#───────────────────────────────────────────────────────────────────────────────
+
+set -uo pipefail
+
+VERSION="1.0.0"
+
+# ── paths & config ────────────────────────────────────────────────────────────
+MACLEAN_DIR="${MACLEAN_CONFIG_DIR:-$HOME/.config/maclean}"
+PROFILE_FILE="$MACLEAN_DIR/profile"
+SELF_UPDATE_BASE="${MACLEAN_SOURCE:-$HOME/Developer/maclean}"
+
+# ── colors ────────────────────────────────────────────────────────────────────
+USE_COLOR=1
+if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then USE_COLOR=0; fi
+if [ "$USE_COLOR" = 1 ]; then
+  BOLD=$(tput bold) DIM=$(tput dim)
+  RED=$(tput setaf 1) GREEN=$(tput setaf 2) YELLOW=$(tput setaf 3)
+  BLUE=$(tput setaf 4) MAGENTA=$(tput setaf 5) CYAN=$(tput setaf 6)
+  GREY=$(tput setaf 8) RESET=$(tput sgr0)
+else
+  BOLD="" DIM="" RED="" GREEN="" YELLOW="" BLUE="" MAGENTA="" CYAN="" GREY="" RESET=""
+fi
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+human() { awk 'BEGIN{b=ARGV[1]+0; split("B KB MB GB TB PB",u); i=1;
+   while(b>=1024 && i<6){ b/=1024; i++ } printf "%.1f%s", b, u[i]}' "${1:-0}"; }
+
+hr() { printf "%s" "$DIM"; printf "─%.0s" $(seq 1 52); printf "%s\n" "$RESET"; }
+
+header()  { printf "\n%s▸ %s%s\n" "$BOLD$BLUE" "$1" "$RESET"; }
+ok()      { printf "%s✓%s %s\n" "$GREEN" "$RESET" "$1"; }
+warn()    { printf "%s!%s %s\n" "$YELLOW" "$RESET" "$1"; }
+err()     { printf "%s✗%s %s\n" "$RED" "$RESET" "$1" >&2; }
+
+# measure a path in KB (0 if missing)
+meas() { [ -e "$1" ] 2>/dev/null || { echo 0; return; }; du -sk "$1" 2>/dev/null | cut -f1 | tr -d ' '; }
+
+# print a finding row: SAFE|REVIEW  bytes  "Label"  "detail"
+finding() {
+  local kind="$1" bytes="$2" label="$3" detail="$4" badge size
+  size=$(human "$((bytes*1024))")
+  if [ "$kind" = "SAFE" ]; then badge="${GREEN}✅${RESET} "
+  else badge="${YELLOW}⚠️ ${RESET}"; fi
+  printf "  %s%s%-9s%s  %-26s %s%s\n" "$badge" "$CYAN" "$size" "$RESET" "$label" "$DIM" "$detail${RESET}"
+}
+
+# safe-clean registry (reset per scan)
+reset_safe()  { SAFE_NAME=(); SAFE_BYTES=(); SAFE_ACT=(); SAFE_ARG=(); }
+safe_add()    { SAFE_NAME+=("$1"); SAFE_BYTES+=("$2"); SAFE_ACT+=("$3"); SAFE_ARG+=("$4"); }
+safe_count()  { echo "${#SAFE_NAME[@]}"; }
+safe_totalb() { local s=0 b; for b in "${SAFE_BYTES[@]:-}"; do s=$((s+${b:-0})); done; echo "$s"; }
+
+# category menu (key|emoji|label)
+menu_cats() {
+  echo "everyone|📚|Everyone / Student (general cleanup)"
+  echo "developer|💻|Developer / Software Engineer"
+  echo "video|🎬|Video Editor"
+  echo "designer|🎨|Designer / Illustrator"
+  echo "music|🎵|Musician / Producer"
+  echo "photo|📸|Photographer"
+  echo "power|🚀|Power User (scan everything)"
+}
+cat_label() { menu_cats | awk -F'|' -v k="$1" '$1==k{print $2" "$3}'; }
+
+read_profile() { [ -f "$PROFILE_FILE" ] && cat "$PROFILE_FILE" 2>/dev/null || echo ""; }
+save_profile() { mkdir -p "$MACLEAN_DIR"; printf "%s\n" "$1" >"$PROFILE_FILE"; }
+
+confirm() {
+  [ "$FORCE_YES" = 1 ] && return 0
+  local ans; read -rp "$1 [Y/n] " ans
+  [ -z "$ans" ] || [[ "$ans" =~ ^[Yy]$ ]]
+}
+
+# ── scanning utilities ────────────────────────────────────────────────────────
+# node_modules safe filter: skip anything under a hidden dir or ~/Library
+# (uses string ops, not regex, to stay compatible with macOS BSD awk)
+NODE_SAFE_FILTER='{p=$2; sub("^"home,"~",p)
+  unsafe=(substr(p,1,3)=="~/.")
+  if(!unsafe && index(p,"/.")) unsafe=1
+  if(substr(p,1,10)=="~/Library/") unsafe=1
+  if(!unsafe) print $1"\t"$2}'
+
+scan_node_modules_kb() {
+  find ~ -type d -name node_modules -prune 2>/dev/null -exec du -sk {} + \
+    | awk -F'\t' -v home="$HOME" "$NODE_SAFE_FILTER" \
+    | while IFS=$'\t' read -r kb p; do echo "$kb	$p"; done
+}
+
+scan_dirs_kb() { # name -> "kb\tpath" lines, excluding Library/hidden noise
+  find ~ -type d -name "$1" -prune 2>/dev/null \
+    -not -path "*/Library/*" -not -path "*/.*/*" -exec du -sk {} + 2>/dev/null
+}
+
+# ── category scanners (print findings + register SAFE targets) ────────────────
+scan_everyone() {
+  header "General cleanup"
+  local kb
+  kb=$(meas "$HOME/.Trash"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Trash" "~/.Trash"; safe_add "Trash" "$kb" trash ""; fi
+  kb=$(meas "$HOME/Library/Caches"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Library caches" "~/Library/Caches"; safe_add "Library caches" "$kb" cache "$HOME/Library/Caches"; fi
+  kb=$(meas "$HOME/Downloads"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Downloads" "your files — review"; fi
+  kb=$(meas "$HOME/Library/Application Support/MobileSync/Backup"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "iPhone/iPad backups" "can be huge — review in Finder"; fi
+  _scan_browsers
+}
+_scan_browsers() {
+  local kb name
+  for b in \
+    "$HOME/Library/Caches/Google/Chrome" \
+    "$HOME/Library/Caches/BraveSoftware" \
+    "$HOME/Library/Caches/Firefox" \
+    "$HOME/Library/Caches/com.apple.Safari" \
+    "$HOME/Library/Caches/com.microsoft.edgemac"; do
+    kb=$(meas "$b"); name=$(basename "$b")
+    if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Browser cache" "$name"; safe_add "Browser ($name)" "$kb" cache "$b"; fi
+  done
+}
+scan_developer() {
+  header "Developer artifacts"
+  local kb n t d
+  t=0; while IFS=$'\t' read -r kb p; do t=$((t+kb)); done < <(scan_node_modules_kb)
+  n=$(scan_node_modules_kb | wc -l | tr -d ' ')
+  if [ "$t" -gt 0 ] 2>/dev/null; then finding SAFE "$t" "node_modules (projects)" "$n folders — reinstall with npm i"; safe_add "node_modules (projects)" "$t" nodes ""; fi
+  for d in .next build dist target out .turbo .parcel-cache .nuxt .svelte-kit; do
+    t=$(scan_dirs_kb "$d" | awk '{s+=$1} END{print s+0}'); n=$(scan_dirs_kb "$d" | wc -l | tr -d ' ')
+    if [ "$t" -gt 0 ] 2>/dev/null; then finding SAFE "$t" "$d/ output" "$n locations — regenerates on build"; safe_add "$d output" "$t" dir "$d"; fi
+  done
+  t=$(scan_dirs_kb "__pycache__" | awk '{s+=$1} END{print s+0}'); if [ "$t" -gt 0 ] 2>/dev/null; then finding SAFE "$t" "__pycache__/" "regenerable"; safe_add "__pycache__" "$t" dir "__pycache__"; fi
+  for c in .pytest_cache .mypy_cache .ruff_cache; do
+    t=$(scan_dirs_kb "$c" | awk '{s+=$1} END{print s+0}'); if [ "$t" -gt 0 ] 2>/dev/null; then finding SAFE "$t" "$c/" "regenerable"; safe_add "$c" "$t" dir "$c"; fi
+  done
+  t=$(scan_dirs_kb ".venv" | awk '{s+=$1} END{print s+0}'); if [ "$t" -gt 0 ] 2>/dev/null; then finding REVIEW "$t" ".venv/" "virtual envs — may be needed"; fi
+  kb=$(meas "$HOME/Library/Developer/Xcode/DerivedData"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Xcode DerivedData" "regenerable"; safe_add "DerivedData" "$kb" rm "$HOME/Library/Developer/Xcode/DerivedData"; fi
+  kb=$(meas "$HOME/Library/Developer/CoreSimulator/Devices"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "iOS Simulators" "remove unavailable"; safe_add "iOS Simulators" "$kb" sim ""; fi
+  kb=$(meas "$HOME/Library/pnpm/store"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "pnpm store" "prune orphans"; safe_add "pnpm store" "$kb" pnpm ""; fi
+  kb=$(meas "$HOME/.npm"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "npm cache" "regenerable"; safe_add "npm cache" "$kb" rm "$HOME/.npm/_cacache"; fi
+  kb=$(meas "$HOME/Library/Caches/Yarn"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Yarn cache" "regenerable"; safe_add "Yarn cache" "$kb" rm "$HOME/Library/Caches/Yarn"; fi
+  kb=$(meas "$HOME/Library/Caches/Homebrew"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Homebrew cache" "brew cleanup"; safe_add "Homebrew cache" "$kb" brew ""; fi
+  kb=$(meas "$HOME/Library/Caches/CocoaPods"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "CocoaPods cache" "regenerable"; safe_add "CocoaPods cache" "$kb" rm "$HOME/Library/Caches/CocoaPods"; fi
+  kb=$(meas "$HOME/Library/Containers/com.docker.docker"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Docker data" "run: docker system prune"; fi
+}
+scan_video() {
+  header "Video editing caches"
+  local kb f fc ff vf
+  kb=$(meas "$HOME/Library/Application Support/Adobe/Common/Media Cache Files"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Adobe Media Cache" "regenerable"; safe_add "Adobe Media Cache" "$kb" rm "$HOME/Library/Application Support/Adobe/Common/Media Cache Files"; fi
+  kb=$(meas "$HOME/Library/Application Support/Adobe/Common/Media Cache"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Adobe Media Cache DB" "regenerable"; safe_add "Adobe Media Cache DB" "$kb" rm "$HOME/Library/Application Support/Adobe/Common/Media Cache"; fi
+  kb=$(meas "$HOME/Library/Application Support/Blackmagic Design"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "DaVinci Resolve data" "contains projects — review"; fi
+  kb=$(meas "$HOME/Library/Caches/com.blackmagic-design.DaVinci Resolve"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "DaVinci cache" "regenerable"; fi
+  fc=0; while IFS= read -r f; do fc=$((fc+$(du -sk "$f" 2>/dev/null|cut -f1))); done < <(find ~ -iname "*.fcpbundle" -prune 2>/dev/null)
+  if [ "$fc" -gt 0 ] 2>/dev/null; then finding REVIEW "$fc" "Final Cut libraries" "render files inside — manage in FCPX"; fi
+  vf=0; while IFS= read -r ff; do vf=$((vf+$(du -sk "$ff" 2>/dev/null|cut -f1))); done < <(find "$HOME/Movies" "$HOME/Downloads" -maxdepth 2 \( -iname "*.mp4" -o -iname "*.mov" -o -iname "*.m4v" \) -size +200M 2>/dev/null)
+  if [ "$vf" -gt 0 ] 2>/dev/null; then finding REVIEW "$vf" "Large video files" "Movies/Downloads — your media"; fi
+}
+scan_designer() {
+  header "Design app caches"
+  local kb
+  kb=$(meas "$HOME/Library/Application Support/Adobe/Common/Media Cache Files"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Adobe Media Cache" "regenerable"; safe_add "Adobe Media Cache" "$kb" rm "$HOME/Library/Application Support/Adobe/Common/Media Cache Files"; fi
+  kb=$(meas "$HOME/Library/Application Support/Figma"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Figma data" "contains accounts — review"; fi
+  kb=$(meas "$HOME/Library/Caches/Figma"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Figma cache" "regenerable"; safe_add "Figma cache" "$kb" rm "$HOME/Library/Caches/Figma"; fi
+  kb=$(meas "$HOME/Library/Application Support/com.bohemiancoding.sketch3"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Sketch data" "review"; fi
+}
+scan_music() {
+  header "Music production caches"
+  local kb
+  kb=$(meas "$HOME/Library/Caches/com.apple.logic10"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Logic Pro cache" "regenerable"; safe_add "Logic cache" "$kb" rm "$HOME/Library/Caches/com.apple.logic10"; fi
+  kb=$(meas "$HOME/Library/Caches/Ableton"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Ableton cache" "regenerable"; safe_add "Ableton cache" "$kb" rm "$HOME/Library/Caches/Ableton"; fi
+  kb=$(meas "$HOME/Music/Logic"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Logic projects" "~/Music/Logic — your projects"; fi
+  kb=$(meas "$HOME/Music/GarageBand"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "GarageBand projects" "~/Music/GarageBand — your projects"; fi
+  kb=$(meas "$HOME/Library/Caches/com.spotify.client"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Spotify cache" "regenerable"; safe_add "Spotify cache" "$kb" rm "$HOME/Library/Caches/com.spotify.client"; fi
+  kb=$(meas "$HOME/Library/Containers/com.apple.AMPPlayer"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Apple Music data" "review"; fi
+}
+scan_photo() {
+  header "Photo app caches"
+  local kb
+  kb=$(meas "$HOME/Pictures/Photos Library.photoslibrary"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Photos library" "manage via Photos app — do not delete"; fi
+  kb=$(meas "$HOME/Library/Caches/Adobe/Lightroom"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding SAFE "$kb" "Lightroom cache" "regenerable"; safe_add "Lightroom cache" "$kb" rm "$HOME/Library/Caches/Adobe/Lightroom"; fi
+  kb=$(meas "$HOME/Library/Application Support/Adobe/Lightroom"); if [ "$kb" -gt 0 ] 2>/dev/null; then finding REVIEW "$kb" "Lightroom data" "contains catalogs — review"; fi
+}
+run_scan() {
+  case "$1" in
+    everyone)  scan_everyone ;;
+    developer) scan_developer ;;
+    video)     scan_video ;;
+    designer)  scan_designer ;;
+    music)     scan_music ;;
+    photo)     scan_photo ;;
+    power)     scan_everyone; scan_developer; scan_video; scan_designer; scan_music; scan_photo ;;
+  esac
+}
+
+# ── clean action runner ───────────────────────────────────────────────────────
+run_action() { # act arg
+  local act="$1" arg="$2"
+  case "$act" in
+    rm)    rm -rf "$arg" 2>/dev/null ;;
+    trash) rm -rf "$HOME/.Trash/"* 2>/dev/null ;;
+    cache) find "$arg" -mindepth 1 -delete 2>/dev/null ;;
+    dir)   find ~ -type d -name "$arg" -prune -not -path "*/Library/*" -not -path "*/.*/*" -exec rm -rf {} + 2>/dev/null ;;
+    nodes) find ~ -type d -name node_modules -prune 2>/dev/null -exec du -sk {} + \
+             | awk -F'\t' -v home="$HOME" "$NODE_SAFE_FILTER" \
+             | while IFS=$'\t' read -r _ p; do rm -rf "$p"; done ;;
+    sim)   xcrun simctl delete unavailable 2>/dev/null ;;
+    pnpm)  command -v pnpm >/dev/null 2>&1 && pnpm store prune >/dev/null 2>&1 ;;
+    brew)  command -v brew >/dev/null 2>&1 && brew cleanup --prune=all >/dev/null 2>&1 ;;
+  esac
+}
+
+# ── commands ──────────────────────────────────────────────────────────────────
+cmd_logo() {
+  printf "%s\n" "${BOLD}${MAGENTA}   ╭───────────────────────────╮${RESET}"
+  printf "%s   │  %s🧹 maclean%s  %sv%s        │%s\n" "${BOLD}${MAGENTA}" "${BOLD}" "${MAGENTA}" "${DIM}" "$VERSION" "${RESET}"
+  printf "%s%s   │  Reclaim your disk space  │%s\n" "${BOLD}${MAGENTA}" "" "${RESET}"
+  printf "%s%s   ╰───────────────────────────╯%s\n" "${BOLD}${MAGENTA}" "${RESET}"
+}
+
+ask_category() {
+  printf "\n%sFirst, what best describes you?%s\n\n" "$BOLD" "$RESET" >&2
+  local i=1
+  while IFS='|' read -r k e l; do
+    printf "  %s%s)%s %s  %s\n" "$CYAN" "$i" "$RESET" "$e" "$l" >&2
+    i=$((i+1))
+  done < <(menu_cats)
+  printf "\n" >&2
+  local choice; read -rp "  Pick a number (1-7): " choice
+  case "$choice" in
+    1) echo everyone ;; 2) echo developer ;; 3) echo video ;;
+    4) echo designer ;; 5) echo music ;; 6) echo photo ;; 7) echo power ;;
+    *) echo everyone ;;
+  esac
+}
+
+cmd_setup() {
+  local key="$1"
+  [ -z "$key" ] && key=$(ask_category)
+  save_profile "$key"
+  printf "\n%s✓ Saved profile:%s %s\n" "$GREEN" "$RESET" "$(cat_label "$key")"
+  printf "%s  (change anytime with: maclean setup)%s\n" "$DIM" "$RESET"
+}
+
+cmd_scan() {
+  reset_safe
+  cmd_logo
+  printf "%sFind what's eating your Mac — safely.%s\n\n" "$DIM" "$RESET"
+
+  local key; key=$(read_profile)
+  if [ -z "$key" ]; then
+    key=$(ask_category)
+    if confirm "  Save this as your profile for next time?"; then
+      save_profile "$key"; printf "%s✓ saved.%s\n" "$GREEN" "$RESET"
+    fi
+  else
+    printf "%sProfile:%s %s\n\n" "$DIM" "$RESET" "$(cat_label "$key")"
+  fi
+
+  header "Disk status"
+  df -h / | awk 'NR==1{next}{p=$5+0; c="🟢"; if(p>90)c="🔴"; else if(p>75)c="🟡";
+    printf "  %s  %s used / %s total  (%s full, %s free)\n", c, $3, $2, $5, $4}'
+
+  run_scan "$key"
+
+  header "Biggest folders in your home"
+  du -sh ~/* 2>/dev/null | sort -rh | head -10 | while IFS=$'\t' read -r s p; do
+    printf "  %s%-9s%s  %s\n" "$CYAN" "$s" "$RESET" "$(basename "$p")"
+  done
+
+  local sc st; sc=$(safe_count); st=$(safe_totalb)
+  echo ""; hr
+  if [ "$sc" -gt 0 ]; then
+    printf "%s%s✅ %s items marked safe%s to clean (~%s reclaimable)\n" "$BOLD" "" "$sc" "$RESET" "$(human "$((st*1024))")"
+    printf "%s⚠️  items are shown for review only — never auto-deleted.%s\n\n" "$DIM" "$RESET"
+    if confirm "  Clean all $sc safe items?"; then
+      local i name act arg
+      for i in $(seq 0 $((sc-1))); do
+        name="${SAFE_NAME[$i]}"; act="${SAFE_ACT[$i]}"; arg="${SAFE_ARG[$i]}"
+        if [ "$DRY_RUN" = 1 ]; then
+          printf "  %s[preview]%s would clean: %s\n" "$GREY" "$RESET" "$name"
+        else
+          run_action "$act" "$arg"; ok "cleaned: $name"
+        fi
+      done
+      [ "$DRY_RUN" = 1 ] || printf "\n%s🎉 Done — run:%s maclean overview %sto see new free space.%s\n" "$GREEN" "$RESET" "$DIM" "$RESET"
+    else
+      printf "%sNo problem — nothing was changed.%s\n" "$DIM" "$RESET"
+    fi
+  else
+    printf "%sNothing safe to auto-clean for this profile.%s\n" "$YELLOW" "$RESET"
+    printf "%sReview the ⚠️ items above manually.%s\n" "$DIM" "$RESET"
+  fi
+}
+
+cmd_overview() {
+  cmd_logo
+  header "Disk status"
+  df -h / | awk 'NR==1{next}{p=$5+0; c="🟢"; if(p>90)c="🔴"; else if(p>75)c="🟡";
+    printf "  %s  %s used / %s total  (%s full, %s free)\n", c, $3, $2, $5, $4}'
+  header "Biggest folders in your home"
+  du -sh ~/* 2>/dev/null | sort -rh | head -15 | while IFS=$'\t' read -r s p; do
+    printf "  %s%-9s%s  %s\n" "$CYAN" "$s" "$RESET" "$(basename "$p")"; done
+  printf "\n%sTip:%s maclean scan | maclean big | maclean dev | maclean caches\n" "$DIM" "$RESET"
+}
+
+cmd_big() {
+  local min="${MACLEAN_MIN_MB:-100}"
+  header "Biggest individual files (>${min}MB)"
+  find ~ -type f -size +${min}M -not -path "*/Library/*" -not -path "*/.Trash/*" 2>/dev/null \
+    | while read -r f; do printf "%s\t%s\n" "$(stat -f%z "$f" 2>/dev/null)" "$f"; done \
+    | sort -rn | head -20 \
+    | while IFS=$'\t' read -r b p; do printf "  %s%-9s%s  %s\n" "$CYAN" "$(human "$b")" "$RESET" "${p/#$HOME/~}"; done || true
+}
+
+cmd_nodes() {
+  header "node_modules — project folders (safe to delete)"
+  local t=0 n=0 kb p
+  while IFS=$'\t' read -r kb p; do
+    printf "  %s%-9s%s  %s\n" "$CYAN" "$(human "$((kb*1024))")" "$RESET" "${p/#$HOME/~}"
+    t=$((t+kb)); n=$((n+1))
+  done < <(scan_node_modules_kb)
+  hr
+  if [ "$n" -gt 0 ]; then printf "  %sTotal: %s across %d folders%s\n" "$BOLD" "$(human "$((t*1024))")" "$n" "$RESET"
+  else printf "  %snone found%s\n" "$DIM" "$RESET"; fi
+}
+
+cmd_dev() {
+  header "Regenerable dev artifacts"
+  local t n d
+  for d in node_modules .next build dist target out .turbo .parcel-cache .nuxt \
+           __pycache__ .pytest_cache .mypy_cache .ruff_cache Pods .cxx; do
+    t=$(scan_dirs_kb "$d" | awk '{s+=$1} END{print s+0}'); n=$(scan_dirs_kb "$d" | wc -l | tr -d ' ')
+    if [ "$t" -gt 0 ] 2>/dev/null; then printf "  %s%-9s%s  %-20s %s(%d)%s\n" "$CYAN" "$(human "$((t*1024))")" "$RESET" "$d/" "$DIM" "$n" "$RESET"; fi
+  done
+}
+
+cmd_caches() {
+  header "Known cache locations"
+  local p kb
+  for p in "$HOME/Library/Caches" "$HOME/Library/Application Support/Code/Cache" \
+           "$HOME/.npm" "$HOME/Library/pnpm/store" "$HOME/Library/Caches/Homebrew" \
+           "$HOME/Library/Caches/Yarn" "$HOME/Library/Caches/pip" \
+           "$HOME/.gradle/caches" "$HOME/Library/Developer/Xcode/DerivedData" \
+           "$HOME/Library/Caches/Google/Chrome" "$HOME/Library/Caches/Firefox"; do
+    kb=$(meas "$p"); if [ "$kb" -gt 0 ] 2>/dev/null; then printf "  %s%-9s%s  %s\n" "$CYAN" "$(human "$((kb*1024))")" "$RESET" "${p/#$HOME/~}"; fi
+  done
+}
+
+cmd_clean() {
+  local target="$1"
+  if [ "$DRY_RUN" = 1 ]; then header "DRY RUN — nothing will be deleted"; fi
+  reset_safe
+  case "$target" in
+    nodes)
+      local t=0 n=0 kb p list
+      list=$(scan_node_modules_kb)
+      while IFS=$'\t' read -r kb p; do t=$((t+kb)); n=$((n+1)); done <<< "$list"
+      if [ "$n" -eq 0 ]; then printf "  %sno project node_modules found%s\n" "$DIM" "$RESET"; return; fi
+      header "Clean project node_modules (safe)"
+      printf "  %s%s%s across %d folders\n" "$BOLD" "$(human "$((t*1024))")" "$RESET" "$n"
+      if confirm "  Delete now?"; then
+        if [ "$DRY_RUN" = 1 ]; then warn "[dry-run] would delete $n folders"
+        else run_action nodes ""; ok "deleted $n node_modules ($(human "$((t*1024))"))"; fi
+      fi ;;
+    caches)
+      header "Clear ~/Library/Caches"
+      printf "  %s%s%s — apps rebuild as needed\n" "$BOLD" "$(du -sh "$HOME/Library/Caches" 2>/dev/null|cut -f1)" "$RESET"
+      if confirm "  Clear it?"; then
+        if [ "$DRY_RUN" = 1 ]; then warn "[dry-run] would clear caches"
+        else find "$HOME/Library/Caches" -mindepth 1 -delete 2>/dev/null; ok "cleared ~/Library/Caches"; fi
+      fi ;;
+    dev)
+      header "Clean all dev build artifacts"
+      local d t=0
+      for d in .next build dist target out .turbo .parcel-cache __pycache__ .pytest_cache .mypy_cache; do
+        t=$((t+$(scan_dirs_kb "$d" | awk '{s+=$1} END{print s+0}')))
+      done
+      printf "  %s%s%s of regenerable build output\n" "$BOLD" "$(human "$((t*1024))")" "$RESET"
+      if confirm "  Delete all (node_modules NOT included)?"; then
+        if [ "$DRY_RUN" = 1 ]; then warn "[dry-run] would delete build dirs"
+        else
+          for d in .next build dist target out .turbo .parcel-cache __pycache__ .pytest_cache .mypy_cache; do run_action dir "$d"; done
+          ok "cleaned dev artifacts"
+        fi
+      fi ;;
+    trash)
+      header "Empty Trash"
+      printf "  %s%s%s in Trash\n" "$BOLD" "$(du -sh "$HOME/.Trash" 2>/dev/null|cut -f1)" "$RESET"
+      if confirm "  Empty Trash?"; then
+        if [ "$DRY_RUN" = 1 ]; then warn "[dry-run]"
+        else run_action trash ""; ok "Trash emptied"; fi
+      fi ;;
+    brew)
+      header "Homebrew cleanup"
+      if ! command -v brew >/dev/null 2>&1; then err "Homebrew not installed"; return; fi
+      if [ "$DRY_RUN" = 1 ]; then brew cleanup -n --prune=all 2>/dev/null; return; fi
+      brew cleanup --prune=all 2>&1 | tail -5; ok "Homebrew cleaned" ;;
+    *) err "unknown clean target: $target"; printf "  %savailable:%s nodes, caches, dev, trash, brew\n" "$DIM" "$RESET" ;;
+  esac
+}
+
+cmd_doctor() {
+  cmd_logo
+  header "Environment check"
+  printf "  %-22s %s\n" "maclean version" "$VERSION"
+  printf "  %-22s %s\n" "shell" "${BASH_VERSION:-unknown}"
+  printf "  %-22s %s\n" "config dir" "$MACLEAN_DIR"
+  local prof; prof=$(read_profile)
+  if [ -n "$prof" ]; then printf "  %-22s %s\n" "profile" "$(cat_label "$prof")"
+  else printf "  %-22s %snot set — run: maclean setup%s\n" "profile" "$DIM" "$RESET"; fi
+  for t in find du awk df xcrun brew pnpm npm; do
+    if command -v "$t" >/dev/null 2>&1; then printf "  %-22s %sfound%s\n" "$t" "$GREEN" "$RESET"
+    else printf "  %-22s %smissing (optional)%s\n" "$t" "$YELLOW" "$RESET"; fi
+  done
+}
+
+cmd_update() {
+  header "Update"
+  if [ -d "$SELF_UPDATE_BASE/.git" ]; then
+    if (cd "$SELF_UPDATE_BASE" && git pull --ff-only 2>&1 | tail -3); then ok "updated via git"
+    else err "git pull failed — check $SELF_UPDATE_BASE"; fi
+  else
+    printf "  %sRe-run the installer to update:%s\n" "$DIM" "$RESET"
+    printf "  curl -fsSL https://raw.githubusercontent.com/shahinalam/maclean/main/install.sh | bash\n"
+  fi
+}
+
+help_text() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ── arg parsing ───────────────────────────────────────────────────────────────
+DRY_RUN=0; FORCE_YES=0; SUBCOMMAND="${1:-scan}"; ARG1=""
+[ $# -gt 0 ] && shift
+for a in "$@"; do
+  case "$a" in
+    -n|--dry-run) DRY_RUN=1 ;;
+    -y|--yes) FORCE_YES=1 ;;
+    --no-color) ;;
+    -h|--help) SUBCOMMAND="help" ;;
+    -v|--version) SUBCOMMAND="version" ;;
+    *) if [ -z "$ARG1" ]; then ARG1="$a"; fi ;;
+  esac
+done
+
+case "$SUBCOMMAND" in
+  scan|"")     cmd_scan ;;
+  setup)       cmd_setup "$ARG1" ;;
+  overview)    cmd_overview ;;
+  big)         cmd_big ;;
+  nodes)       cmd_nodes ;;
+  dev)         cmd_dev ;;
+  caches)      cmd_caches ;;
+  clean)       cmd_clean "$ARG1" ;;
+  doctor)      cmd_doctor ;;
+  update)      cmd_update ;;
+  version|-v)  echo "maclean v$VERSION" ;;
+  help|-h|--help) cmd_logo; printf "\n"; help_text ;;
+  *) err "unknown command: $SUBCOMMAND"; help_text; exit 1 ;;
+esac

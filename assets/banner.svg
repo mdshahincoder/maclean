@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-label="maclean banner">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="55%" stop-color="#161b29"/>
+      <stop offset="100%" stop-color="#1f1530"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="340" fill="url(#bg)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#ffffff" stroke-opacity="0.035" stroke-width="1">
+    <path d="M0 85 H1200 M0 170 H1200 M0 255 H1200"/>
+    <path d="M200 0 V340 M500 0 V340 M800 0 V340 M1050 0 V340"/>
+  </g>
+
+  <!-- broom glyph -->
+  <g transform="translate(70,150)" filter="url(#glow)">
+    <text x="0" y="0" font-size="96" font-family="Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji">🧹</text>
+  </g>
+
+  <!-- wordmark -->
+  <text x="185" y="150" font-family="SF Pro Display,-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+        font-size="82" font-weight="800" fill="#f5f7fb" letter-spacing="-2">maclean</text>
+
+  <!-- gradient tagline -->
+  <text x="188" y="200" font-family="SF Pro Text,-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+        font-size="27" font-weight="600" fill="url(#accent)">Reclaim your Mac's disk space — safely.</text>
+
+  <text x="188" y="236" font-family="SF Pro Text,-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+        font-size="18" font-weight="400" fill="#9aa4b2">An interactive cleaner for developers, video editors, designers &amp; everyone.</text>
+
+  <!-- disk-usage bar visualization -->
+  <g transform="translate(188,268)">
+    <rect x="0" y="0" width="560" height="16" rx="8" fill="#2a3142"/>
+    <rect x="0" y="0" width="120" height="16" rx="8" fill="url(#accent)"/>
+    <text x="576" y="13" font-family="SF Pro Text,-apple-system,Segoe UI,Helvetica,Arial,sans-serif"
+          font-size="15" font-weight="600" fill="#9aa4b2">21% used · 79% free</text>
+  </g>
+
+  <!-- right-side badges -->
+  <g font-family="SF Pro Text,-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="15" font-weight="600">
+    <g transform="translate(960,118)">
+      <rect x="0" y="0" width="150" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="75" y="20" text-anchor="middle" fill="#cdd6e4">🍎 macOS</text>
+    </g>
+    <g transform="translate(960,158)">
+      <rect x="0" y="0" width="150" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="75" y="20" text-anchor="middle" fill="#cdd6e4">⚡ Zero deps</text>
+    </g>
+    <g transform="translate(960,198)">
+      <rect x="0" y="0" width="150" height="30" rx="15" fill="#ffffff" fill-opacity="0.06" stroke="#ffffff" stroke-opacity="0.12"/>
+      <text x="75" y="20" text-anchor="middle" fill="#cdd6e4">🔒 Safe by default</text>
+    </g>
+  </g>
+</svg>
