@@ -17,6 +17,9 @@
 #   maclean nodes            project node_modules (safe to delete)
 #   maclean caches           known cache locations
 #   maclean clean <target>   targeted clean: nodes | caches | dev | trash | brew
+#   maclean doctor           environment & dependency check
+#   maclean update           update to the latest version
+#   maclean uninstall        remove maclean completely from your machine
 #
 # Flags (global):
 #   -n, --dry-run   preview only — never delete anything
@@ -453,6 +456,64 @@ cmd_update() {
   fi
 }
 
+cmd_uninstall() {
+  cmd_logo
+  header "Uninstall maclean"
+  printf "This will remove:%s\n" "$RESET"
+  printf "  • the maclean script%s\n" "$DIM"
+  printf "  • your config directory (%s)%s\n" "$MACLEAN_DIR" "$DIM"
+  printf "  • the PATH entry maclean added to your shell rc%s\n\n" "$DIM"
+  printf "%sYour projects, caches, and everything maclean ever cleaned stay untouched —%s\n" "$YELLOW" "$RESET"
+  printf "%sonly the tool itself is removed.%s\n\n" "$YELLOW" "$RESET"
+  if ! confirm "  Remove maclean completely?"; then
+    printf "%sNo problem — nothing was changed.%s\n" "$DIM" "$RESET"; return
+  fi
+
+  # 1. locate & remove the installed binary (all common locations)
+  local removed_bin="" cand bin install_dir
+  install_dir="${MACLEAN_INSTALL_DIR:-$HOME/bin}"
+  cand=$(command -v maclean 2>/dev/null)
+  if [ -n "$cand" ]; then
+    candidates=("$cand" "$HOME/bin/maclean" "$install_dir/maclean" "$HOME/.local/bin/maclean")
+  else
+    candidates=("$HOME/bin/maclean" "$install_dir/maclean" "$HOME/.local/bin/maclean")
+  fi
+  for bin in "${candidates[@]}"; do
+    if [ -f "$bin" ]; then
+      rm -f "$bin" && removed_bin="$bin"
+    fi
+  done
+
+  # 2. remove config directory (~/.config/maclean)
+  rm -rf "$MACLEAN_DIR" 2>/dev/null
+
+  # 3. clean the PATH entry from shell rc files (idempotent marker used by installer)
+  local rc
+  for rc in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile"; do
+    [ -f "$rc" ] || continue
+    # remove the maclean marker block + the export PATH line it added
+    if grep -q "# maclean PATH" "$rc" 2>/dev/null; then
+      cp "$rc" "$rc.bak" 2>/dev/null
+      grep -v "# maclean PATH" "$rc" \
+        | grep -v 'export PATH=.*\$HOME/bin:\|export PATH=".*\$HOME/bin' \
+        > "$rc.tmp" 2>/dev/null && mv "$rc.tmp" "$rc"
+      rm -f "$rc.tmp" "$rc.bak" 2>/dev/null
+    fi
+  done
+
+  # 4. report
+  echo ""
+  if [ -n "$removed_bin" ]; then
+    ok "removed binary: $removed_bin"
+  else
+    warn "no installed binary found in common locations"
+  fi
+  ok "removed config: $MACLEAN_DIR"
+  ok "cleaned PATH entries from shell rc files"
+  printf "\n%s🎉 maclean is fully uninstalled.%s\n" "$GREEN" "$RESET"
+  printf "%sStart a new terminal (or run: source ~/.zshrc) for the PATH change to take effect.%s\n" "$DIM" "$RESET"
+}
+
 help_text() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
@@ -486,6 +547,7 @@ case "$SUBCOMMAND" in
   clean)       cmd_clean "$ARG1" ;;
   doctor)      cmd_doctor ;;
   update)      cmd_update ;;
+  uninstall)   cmd_uninstall ;;
   version|-v)  echo "maclean v$VERSION" ;;
   help|-h|--help) cmd_logo; printf "\n"; help_text ;;
   *) err "unknown command: $SUBCOMMAND"; help_text; exit 1 ;;

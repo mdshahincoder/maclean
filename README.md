@@ -87,6 +87,26 @@ maclean update          # if installed via git
 
 </details>
 
+<details>
+<summary><b>Uninstall</b></summary>
+
+Remove maclean completely — the script, its config, and the PATH entry:
+
+```bash
+maclean uninstall           # interactive, asks for confirmation
+```
+
+Or via the one-liner (no need to have maclean installed):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mdshahincoder/maclean/main/uninstall.sh | bash
+```
+
+**Only the tool is removed.** Your projects, caches, and everything maclean
+ever cleaned stay exactly where they are — untouched.
+
+</details>
+
 ## 🚀 Quick start
 
 ```bash
@@ -151,6 +171,7 @@ maclean caches         # known cache locations
 maclean clean <target> # targeted clean: nodes | caches | dev | trash | brew
 maclean doctor         # environment & dependency check
 maclean update         # update to the latest version
+maclean uninstall      # remove maclean completely
 maclean --help         # full usage
 maclean --version
 ```
