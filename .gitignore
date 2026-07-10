@@ -16,5 +16,8 @@
 # Logs
 *.log
 
+# Node / Changesets (dev tooling only — the maclean script itself is committed)
+node_modules/
+
 # Local install artifacts (don't commit installed copies)
 # (the maclean script itself IS committed — these ignore the rest)

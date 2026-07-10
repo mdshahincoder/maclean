@@ -2,14 +2,13 @@
 
 All notable changes to this project are documented here.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+This file is managed by [Changesets](https://github.com/changesets/changesets) —
+see [`.changeset/README.md`](.changeset/README.md) for the workflow.
 
-## [Unreleased]
-
-## [1.0.0] - 2026-07-09
+## 1.0.0
 
 ### 🎉 Added
+
 - Initial public release.
 - **Interactive guided scan** (`maclean` / `maclean scan`) with onboarding.
 - **Profiles** that tailor the scan to the user: Everyone, Developer, Video Editor,
@@ -22,6 +21,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dry-run mode** (`--dry-run`) and **auto-yes** (`--yes`).
 - One-line curl installer and `install.sh`.
 - MIT license, README, CONTRIBUTING guide, Code of Conduct, issue templates.
-
-[Unreleased]: https://github.com/mdshahincoder/maclean/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/mdshahincoder/maclean/releases/tag/v1.0.0

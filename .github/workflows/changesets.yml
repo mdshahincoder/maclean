@@ -1,0 +1,43 @@
+name: Release
+
+# When a contributor pushes a changeset to main, a bot opens a
+# "Version Packages" pull request with the version bump + changelog ready.
+# Merging that PR performs the release.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: changesets-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  version:
+    name: Version Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create / Update Version PR
+        uses: changesets/action@v1
+        with:
+          # Bump package.json + CHANGELOG.md, then bake the version into the
+          # maclean Bash script (it ships as a standalone file, not an npm pkg).
+          version: npx changeset version && bash scripts/sync-version.sh
+          commit: "chore(release): version packages"
+          title: "chore(release): version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

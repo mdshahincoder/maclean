@@ -456,7 +456,13 @@ cmd_update() {
 help_text() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
-DRY_RUN=0; FORCE_YES=0; SUBCOMMAND="${1:-scan}"; ARG1=""
+DRY_RUN=0; FORCE_YES=0; ARG1=""; SUBCOMMAND="${1:-scan}"
+# recognize -v/--version/-h/--help/help even when passed as the first token
+first="${1:-}"
+case "$first" in
+  -v|--version) SUBCOMMAND="version" ;;
+  -h|--help)    SUBCOMMAND="help" ;;
+esac
 [ $# -gt 0 ] && shift
 for a in "$@"; do
   case "$a" in

@@ -66,8 +66,17 @@ personal data — **never auto-delete things you didn't create.**
 1. Fork the repo and create a branch: `git checkout -b feature/my-cool-thing`
 2. Make your changes in `maclean` (and docs if needed).
 3. Verify: `bash -n maclean` passes and `./maclean scan --dry-run --yes` runs clean.
-4. Commit with a clear message.
-5. Open a PR describing **what** changed and **why**.
+4. **If your change is user-facing, add a changeset** so it lands in the next release:
+   ```bash
+   npm install          # first time only
+   npm run changeset    # pick patch/minor/major + write a summary
+   ```
+   Commit the generated `.changeset/*.md` file with your code.
+5. Commit with a clear message.
+6. Open a PR describing **what** changed and **why**.
+
+See [VERSIONING.md](VERSIONING.md) for how releases are cut (it's automated by a
+GitHub bot — you just add the changeset).
 
 ## Reporting bugs
 

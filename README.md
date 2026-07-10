@@ -231,6 +231,20 @@ Great first issues: add scan profiles for new apps (Blender, Notion, Slack, …)
 improve path detection, add translations, or write tests. maclean is one file, so
 it's easy to grok.
 
+### 📦 Versioning
+
+This project uses [**Changesets**](https://github.com/changesets/changesets) for
+versioning and changelog management. When you open a PR that changes user-facing
+behavior, add a changeset:
+
+```bash
+npm run changeset        # answer the prompts, commit the generated file
+```
+
+When your PR is merged to `main`, a bot automatically opens a **“Version Packages”**
+PR with the version bump and changelog already prepared — merging it cuts a release.
+See [VERSIONING.md](VERSIONING.md) for details.
+
 ## ⭐ Show your support
 
 If maclean freed up space on your Mac, give it a **star** ⭐ at the top of the

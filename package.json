@@ -1,0 +1,46 @@
+{
+  "name": "maclean",
+  "version": "1.0.0",
+  "description": "Reclaim your Mac's disk space — safely. A safe-by-default disk analyzer & cleaner for macOS, for developers, video editors, designers & everyone.",
+  "license": "MIT",
+  "author": "Shahin Alam <mdshahin.coder@gmail.com>",
+  "homepage": "https://github.com/mdshahincoder/maclean",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mdshahincoder/maclean.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mdshahincoder/maclean/issues"
+  },
+  "keywords": [
+    "macos",
+    "mac",
+    "cli",
+    "disk",
+    "cleanup",
+    "bash",
+    "shell",
+    "storage",
+    "node-modules",
+    "developer-tools"
+  ],
+  "private": true,
+  "bin": {
+    "maclean": "maclean"
+  },
+  "files": [
+    "maclean",
+    "install.sh",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "changeset": "changeset",
+    "bump": "changeset version && bash scripts/sync-version.sh",
+    "version:sync": "bash scripts/sync-version.sh",
+    "status": "changeset status"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.12"
+  }
+}
